@@ -88,6 +88,68 @@
     font-weight:bold;
   }
 
+  /* 歷史頁：銷售分析區塊 */
+  .analysis-block{
+    border:2px solid var(--border2);
+    background:var(--panel);
+    padding:12px 14px;
+    margin-bottom:14px;
+  }
+  .analysis-title{
+    font-size:20px;
+    font-weight:bold;
+    color:var(--text);
+    border-bottom:1px solid var(--border2);
+    padding-bottom:6px;
+    margin-bottom:10px;
+  }
+  .analysis-subtitle{
+    font-size:16px;
+    color:#ffff88;
+    margin:14px 0 8px;
+  }
+  .stat-grid{
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+  }
+  .stat-tile{
+    flex:1 1 110px;
+    background:var(--panel2);
+    border:1px solid var(--border);
+    padding:8px 10px;
+    text-align:center;
+  }
+  .stat-label{ font-size:12px; color:#ccccaa; margin-bottom:4px; }
+  .stat-value{ font-size:18px; color:var(--text); font-weight:bold; }
+
+  .rank-list, .hour-list{ display:flex; flex-direction:column; gap:6px; }
+  .rank-row, .hour-row{
+    display:grid;
+    grid-template-columns: 120px 1fr 150px;
+    gap:8px;
+    align-items:center;
+    font-size:14px;
+  }
+  .rank-name{ overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  .hour-label{ color:#ffffaa; }
+  .rank-bar-outer, .hour-bar-outer{
+    background:#000030;
+    border:1px solid var(--border2);
+    height:14px;
+    position:relative;
+  }
+  .rank-bar-inner, .hour-bar-inner{
+    background:var(--orange);
+    height:100%;
+  }
+  .rank-figures, .hour-figures{ text-align:right; color:#ffffaa; white-space:nowrap; }
+  .analysis-empty{ color:#ccccaa; padding:6px 0; font-size:14px; }
+
+  @media (max-width:640px){
+    .rank-row, .hour-row{ grid-template-columns: 84px 1fr 110px; font-size:12px; }
+  }
+
   @keyframes pop{ from{ transform:scale(.92); opacity:.6 } to{ transform:scale(1); opacity:1 } }
   </style>
 </head>
@@ -165,6 +227,40 @@
               <button id="btn-clear-all">清空所有紀錄</button>
               <button id="btn-h-back" class="primary">返回主頁</button>
             </div>
+          </div>
+
+          <!-- 銷售分析（跟著上面的日期篩選走） -->
+          <div id="sales-analysis" class="analysis-block">
+            <div class="analysis-title vga">銷售分析</div>
+
+            <div class="stat-grid">
+              <div class="stat-tile">
+                <div class="stat-label vga">交易筆數</div>
+                <div class="stat-value vga" id="an-count">0</div>
+              </div>
+              <div class="stat-tile">
+                <div class="stat-label vga">總營業額</div>
+                <div class="stat-value vga" id="an-total">NT$ 0</div>
+              </div>
+              <div class="stat-tile">
+                <div class="stat-label vga">平均客單價</div>
+                <div class="stat-value vga" id="an-avg">NT$ 0</div>
+              </div>
+              <div class="stat-tile">
+                <div class="stat-label vga">總收現金</div>
+                <div class="stat-value vga" id="an-received">NT$ 0</div>
+              </div>
+              <div class="stat-tile">
+                <div class="stat-label vga">總找零</div>
+                <div class="stat-value vga" id="an-change">NT$ 0</div>
+              </div>
+            </div>
+
+            <div class="analysis-subtitle vga">商品銷售排行</div>
+            <div id="an-rank-list" class="rank-list"></div>
+
+            <div class="analysis-subtitle vga">時段分布</div>
+            <div id="an-hour-list" class="hour-list"></div>
           </div>
 
           <ul id="history-list" style="list-style:none;padding:0;margin:0"></ul>
@@ -387,8 +483,8 @@
 
   // 更新今日統計與時鐘
   function refreshTodayStats(){
-    const today = new Date().toISOString().slice(0,10);
-    const list = loadAll().filter(r=> (r.ts||'').slice(0,10) === today);
+    const today = getDateKey(new Date());
+    const list = loadAll().filter(r=> getDateKey(r.ts) === today);
     const sum = list.reduce((s,r)=> s + (r.total||0), 0);
     el('#today-stats').textContent = `今日銷售：${list.length} 筆／${formatNT(sum)}`;
   }
@@ -415,12 +511,109 @@
     }catch(e){ return ts || ''; }
   }
 
+  // ★ 用「本地時間」取日期，不要用 ISO 字串直接切（ISO 是 UTC，會讓凌晨0~8點的交易算到前一天）
   function getDateKey(ts){
     if(!ts) return '未知日期';
     try{
-      return String(ts).slice(0,10); // ts 是 ISO 時間字串
+      const d = new Date(ts);
+      if(isNaN(d.getTime())) return '未知日期';
+      const pad = n => String(n).padStart(2,'0');
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
     }catch(e){
       return '未知日期';
+    }
+  }
+
+  // 取本地小時（0-23），供時段分布使用
+  function getHourKey(ts){
+    if(!ts) return null;
+    try{
+      const d = new Date(ts);
+      if(isNaN(d.getTime())) return null;
+      return d.getHours();
+    }catch(e){
+      return null;
+    }
+  }
+
+  // 計算「銷售分析」用的統計資料（傳入已篩選好日期的紀錄陣列）
+  function computeAnalysis(list){
+    const count = list.length;
+    const total = list.reduce((s,r)=> s + (r.total||0), 0);
+    const received = list.reduce((s,r)=> s + (r.received||0), 0);
+    const change = list.reduce((s,r)=> s + (r.change||0), 0);
+    const avg = count ? total / count : 0;
+
+    const productMap = {};
+    list.forEach(r=>{
+      (r.items||[]).forEach(it=>{
+        if(!productMap[it.name]) productMap[it.name] = { name: it.name, qty:0, revenue:0 };
+        productMap[it.name].qty += (it.qty||0);
+        productMap[it.name].revenue += (it.price||0) * (it.qty||0);
+      });
+    });
+    const products = Object.values(productMap).sort((a,b)=> b.revenue - a.revenue);
+
+    const hourMap = {};
+    list.forEach(r=>{
+      const h = getHourKey(r.ts);
+      if(h === null) return;
+      if(!hourMap[h]) hourMap[h] = { hour:h, count:0, revenue:0 };
+      hourMap[h].count += 1;
+      hourMap[h].revenue += (r.total||0);
+    });
+    const hours = Object.values(hourMap).sort((a,b)=> a.hour - b.hour);
+
+    return { count, total, received, change, avg, products, hours };
+  }
+
+  // 渲染「銷售分析」區塊（傳入已篩選好日期的紀錄陣列）
+  function renderAnalysis(list){
+    const a = computeAnalysis(list);
+
+    el('#an-count').textContent    = a.count;
+    el('#an-total').textContent    = formatNT(a.total);
+    el('#an-avg').textContent      = formatNT(Math.round(a.avg));
+    el('#an-received').textContent = formatNT(a.received);
+    el('#an-change').textContent   = formatNT(a.change);
+
+    const rankBox = el('#an-rank-list');
+    rankBox.innerHTML = '';
+    if(!a.products.length){
+      rankBox.innerHTML = '<div class="vga analysis-empty">（本區間尚無銷售）</div>';
+    }else{
+      const maxRevenue = Math.max(...a.products.map(p=> p.revenue), 1);
+      a.products.forEach(p=>{
+        const pct = Math.round((p.revenue / maxRevenue) * 100);
+        const row = document.createElement('div');
+        row.className = 'rank-row';
+        row.innerHTML = `
+          <div class="rank-name vga">${p.name}</div>
+          <div class="rank-bar-outer"><div class="rank-bar-inner" style="width:${pct}%"></div></div>
+          <div class="rank-figures vga">${p.qty} 件／${formatNT(p.revenue)}</div>
+        `;
+        rankBox.appendChild(row);
+      });
+    }
+
+    const hourBox = el('#an-hour-list');
+    hourBox.innerHTML = '';
+    if(!a.hours.length){
+      hourBox.innerHTML = '<div class="vga analysis-empty">（本區間尚無銷售）</div>';
+    }else{
+      const maxCount = Math.max(...a.hours.map(h=> h.count), 1);
+      a.hours.forEach(h=>{
+        const pct = Math.round((h.count / maxCount) * 100);
+        const label = String(h.hour).padStart(2,'0') + ':00';
+        const row = document.createElement('div');
+        row.className = 'hour-row';
+        row.innerHTML = `
+          <div class="hour-label vga">${label}</div>
+          <div class="hour-bar-outer"><div class="hour-bar-inner" style="width:${pct}%"></div></div>
+          <div class="hour-figures vga">${h.count} 筆／${formatNT(h.revenue)}</div>
+        `;
+        hourBox.appendChild(row);
+      });
     }
   }
 
@@ -437,6 +630,8 @@
     const ul = el('#history-list'); ul.innerHTML = '';
     const sum = list.reduce((s,r)=> s + (r.total||0), 0);
     el('#history-summary').textContent = `共 ${list.length} 筆／合計 ${formatNT(sum)}`;
+
+    renderAnalysis(list);
 
     if(!list.length){
       const li = document.createElement('li');
@@ -561,7 +756,8 @@
       ].join(','));
     });
 
-    const csv = rows.join('\r\n');
+    // 加上 UTF-8 BOM，Windows Excel 直接雙擊開啟中文才不會變亂碼
+    const csv = '﻿' + rows.join('\r\n');
     const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -723,9 +919,11 @@
     const resultShown = !el('#result').classList.contains('hidden');
     const thanksShown = el('#thanks-modal').classList.contains('show');
 
-    // Insert：查看歷史 / 返回主頁
+    // Insert：查看歷史 / 返回主頁（如果目前有結帳彈窗，先關掉彈窗，不要留著疊在別頁上面）
     if (e.key === 'Insert' || e.code === 'Insert') {
       e.preventDefault();
+      if(resultShown){ hideResultModal(); return; }
+      if(thanksShown){ hideThanksModal(); returnHome(); return; }
       if (onHistoryPage()) {
         gotoPage('#page-products');
       } else {
@@ -767,6 +965,51 @@
     if(onPayPage()){
       const inp = el('#cash-input');
 
+      // Enter / NumpadEnter：第二、第三、第四階段（放最前面，感謝視窗顯示時也要能用 Enter 關掉）
+      if(e.key === 'Enter' || e.code === 'NumpadEnter'){
+        e.preventDefault();
+
+        const sum = calcSum();
+        const received = Number(el('#cash-input').value||0);
+
+        if(!resultShown && !thanksShown){
+          // 第二階段 Enter：付款頁 → 顯示收款／合計／找回視窗
+          playAudioById('#enterSound');
+          showResultModal(sum, received);
+        }else if(resultShown && !thanksShown){
+          // 第三階段 Enter：完成結帳（特別音效）
+          if(received < sum){
+            // 金額不足時仍停在此階段，用一般 Enter 音效提醒
+            playAudioById('#enterSound');
+            showResultModal(sum, received);
+            return;
+          }
+          playAudioById('#enterFinal');
+          finishCheckout();
+        }else if(thanksShown){
+          // 第四階段 Enter：關閉感謝視窗 → 回主頁
+          playAudioById('#enterSound');
+          hideThanksModal();
+          returnHome();
+        }
+        return;
+      }
+
+      // ESC：關掉目前開著的彈窗（結帳結果／感謝視窗），沒有彈窗才回商品頁
+      if(e.key === 'Escape'){
+        e.preventDefault();
+        if(resultShown){ hideResultModal(); return; }
+        if(thanksShown){ hideThanksModal(); returnHome(); return; }
+        gotoPage('#page-products');
+        return;
+      }
+
+      // 感謝視窗顯示中：這筆交易已經結束了，其餘按鍵一律忽略，
+      // 避免誤按數字鍵／F鍵，把舊的收現金額當成下一筆重新結一次帳（會產生金額0的空紀錄）
+      if(thanksShown){
+        return;
+      }
+
       // 數字輸入（完全由程式接管，不用點輸入框）
       if (/^[0-9]$/.test(e.key)) {
         e.preventDefault();
@@ -802,36 +1045,6 @@
         return;
       }
 
-      // Enter / NumpadEnter：第二、第三、第四階段
-      if(e.key === 'Enter' || e.code === 'NumpadEnter'){
-        e.preventDefault();
-
-        const sum = calcSum();
-        const received = Number(el('#cash-input').value||0);
-
-        if(!resultShown && !thanksShown){
-          // 第二階段 Enter：付款頁 → 顯示收款／合計／找回視窗
-          playAudioById('#enterSound');
-          showResultModal(sum, received);
-        }else if(resultShown && !thanksShown){
-          // 第三階段 Enter：完成結帳（特別音效）
-          if(received < sum){
-            // 金額不足時仍停在此階段，用一般 Enter 音效提醒
-            playAudioById('#enterSound');
-            showResultModal(sum, received);
-            return;
-          }
-          playAudioById('#enterFinal');
-          finishCheckout();
-        }else if(thanksShown){
-          // 第四階段 Enter：關閉感謝視窗 → 回主頁
-          playAudioById('#enterSound');
-          hideThanksModal();
-          returnHome();
-        }
-        return;
-      }
-
       // F 鍵：強制完成結帳（沿用 final 音效）
       if(e.key.toLowerCase() === 'f'){
         e.preventDefault();
@@ -845,13 +1058,6 @@
         }
         playAudioById('#enterFinal');
         finishCheckout();
-        return;
-      }
-
-      // ESC：回商品頁
-      if(e.key === 'Escape'){
-        e.preventDefault();
-        gotoPage('#page-products');
         return;
       }
     }
